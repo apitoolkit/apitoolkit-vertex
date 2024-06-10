@@ -11,6 +11,11 @@ import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.ProjectTopicName;
 import com.google.pubsub.v1.PubsubMessage;
 
+import io.vertx.core.MultiMap;
+import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpServerRequest;
+import io.vertx.core.http.HttpServerResponse;
+import io.vertx.ext.web.RoutingContext;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -20,6 +25,11 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
+import java.text.SimpleDateFormat;
+import java.util.Base64;
+import java.util.Date;
+import java.util.UUID;
 
 public class APIToolkit {
     private Publisher pubsubClient;
@@ -52,6 +62,98 @@ public class APIToolkit {
         } catch (Exception e) {
             e.printStackTrace();
             throw new Exception("APIToolkit: Error initializing client", e);
+        }
+
+    }
+
+    public void vertxHandler(RoutingContext context) {
+        long startTime = System.nanoTime();
+        String msgId = UUID.randomUUID().toString();
+        int statusCode = 200;
+        context.put("apitoolkit_msg_id", msgId);
+        context.next();
+        statusCode = context.response().getStatusCode();
+        ByteString payload = buildPayload(startTime, context, context.request(), context.response(),
+                statusCode, msgId);
+        this.publishMessage(payload);
+    }
+
+    public ByteString buildPayload(long duration, RoutingContext context, HttpServerRequest req, HttpServerResponse res,
+            Integer statusCode, String msgid) {
+
+        HashMap<String, Object> reqHeaders = new HashMap<>();
+
+        MultiMap reqHeadersV = req.headers();
+        for (String key : reqHeadersV.names()) {
+            String value = reqHeadersV.get(key);
+            reqHeaders.put(key, value);
+        }
+
+        reqHeaders = Utils.redactHeaders(reqHeaders, this.redactHeaders);
+
+        HashMap<String, Object> resHeaders = new HashMap<>();
+        MultiMap resHeadersV = res.headers();
+        for (String key : resHeadersV.names()) {
+            String value = resHeadersV.get(key);
+            resHeaders.put(key, value);
+        }
+
+        resHeaders = Utils.redactHeaders(resHeaders, this.redactHeaders);
+
+        MultiMap params = req.params();
+
+        HttpMethod method = req.method();
+        String queryString = req.query() == null ? "" : "?" + req.query();
+        String rawUrl = req.path() + queryString;
+        String matchedPattern = context.currentRoute().getPath();
+        String req_body_str = context.body().asString();
+        byte[] req_body = req_body_str == null ? "".getBytes() : req_body_str.getBytes();
+        byte[] res_body = "".getBytes();
+
+        Map<String, String> pathVariables = (Map<String, String>) context.pathParams();
+        byte[] redactedBody = Utils.redactJson(req_body,
+                this.redactRequestBody, this.debug);
+        byte[] redactedResBody = Utils.redactJson(res_body, this.redactResponseBody, this.debug);
+        Date currentDate = new Date();
+
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+        dateFormat.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        String isoString = dateFormat.format(currentDate);
+        @SuppressWarnings("unchecked")
+        // List<Map<String, Object>> errorList = (List<Map<String, Object>>)
+        // req.getAt("APITOOLKIT_ERRORS");
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("request_headers", reqHeaders);
+        payload.put("response_headers", resHeaders);
+        payload.put("status_code", statusCode);
+        payload.put("method", method);
+        // payload.put("errors", errorList);
+        payload.put("host", req.authority().host());
+        payload.put("raw_url", rawUrl);
+        payload.put("duration", duration);
+        payload.put("url_path", matchedPattern);
+        payload.put("query_params", params);
+        payload.put("path_params", pathVariables);
+        payload.put("project_id", this.clientMetadata.projectId);
+        payload.put("proto_major", 1);
+        payload.put("proto_minor", 1);
+        payload.put("msg_id", msgid);
+        payload.put("timestamp", isoString);
+        payload.put("referer", req.getHeader("referer") == null ? "" : req.getHeader("referer"));
+        payload.put("sdk_type", "JavaSpringBoot");
+        payload.put("request_body", Base64.getEncoder().encodeToString(redactedBody));
+        payload.put("response_body", Base64.getEncoder().encodeToString(redactedResBody));
+
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            byte[] jsonBytes = objectMapper.writeValueAsBytes(payload);
+            return ByteString.copyFrom(jsonBytes);
+        } catch (Exception e) {
+            if (this.debug) {
+                e.printStackTrace();
+            }
+            return ByteString.EMPTY;
         }
 
     }

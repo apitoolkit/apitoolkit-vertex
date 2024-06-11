@@ -71,14 +71,19 @@ public class APIToolkit {
         String msgId = UUID.randomUUID().toString();
         int statusCode = 200;
         context.put("apitoolkit_msg_id", msgId);
+        context.response().bodyEndHandler(v -> {
+
+        });
         context.next();
         statusCode = context.response().getStatusCode();
+
         ByteString payload = buildPayload(startTime, context, context.request(), context.response(),
                 statusCode, msgId);
         this.publishMessage(payload);
     }
 
-    public ByteString buildPayload(long duration, RoutingContext context, HttpServerRequest req, HttpServerResponse res,
+    private ByteString buildPayload(long duration, RoutingContext context, HttpServerRequest req,
+            HttpServerResponse res,
             Integer statusCode, String msgid) {
 
         HashMap<String, Object> reqHeaders = new HashMap<>();
@@ -101,8 +106,13 @@ public class APIToolkit {
         resHeaders = Utils.redactHeaders(resHeaders, this.redactHeaders);
 
         MultiMap params = req.params();
+        HashMap<String, Object> query_params = new HashMap<>();
+        for (String key : params.names()) {
+            Object value = params.get(key);
+            query_params.put(key, value);
+        }
 
-        HttpMethod method = req.method();
+        String method = req.method().toString();
         String queryString = req.query() == null ? "" : "?" + req.query();
         String rawUrl = req.path() + queryString;
         String matchedPattern = context.currentRoute().getPath();
@@ -120,20 +130,19 @@ public class APIToolkit {
         dateFormat.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
         String isoString = dateFormat.format(currentDate);
         @SuppressWarnings("unchecked")
-        // List<Map<String, Object>> errorList = (List<Map<String, Object>>)
-        // req.getAt("APITOOLKIT_ERRORS");
+        List<Map<String, Object>> errorList = (List<Map<String, Object>>) context.get("APITOOLKIT_ERRORS");
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("request_headers", reqHeaders);
         payload.put("response_headers", resHeaders);
         payload.put("status_code", statusCode);
         payload.put("method", method);
-        // payload.put("errors", errorList);
+        payload.put("errors", errorList);
         payload.put("host", req.authority().host());
         payload.put("raw_url", rawUrl);
         payload.put("duration", duration);
         payload.put("url_path", matchedPattern);
-        payload.put("query_params", params);
+        payload.put("query_params", query_params);
         payload.put("path_params", pathVariables);
         payload.put("project_id", this.clientMetadata.projectId);
         payload.put("proto_major", 1);
@@ -141,7 +150,7 @@ public class APIToolkit {
         payload.put("msg_id", msgid);
         payload.put("timestamp", isoString);
         payload.put("referer", req.getHeader("referer") == null ? "" : req.getHeader("referer"));
-        payload.put("sdk_type", "JavaSpringBoot");
+        payload.put("sdk_type", "JavaVertx");
         payload.put("request_body", Base64.getEncoder().encodeToString(redactedBody));
         payload.put("response_body", Base64.getEncoder().encodeToString(redactedResBody));
 
@@ -150,6 +159,7 @@ public class APIToolkit {
             byte[] jsonBytes = objectMapper.writeValueAsBytes(payload);
             return ByteString.copyFrom(jsonBytes);
         } catch (Exception e) {
+            e.printStackTrace();
             if (this.debug) {
                 e.printStackTrace();
             }
@@ -196,7 +206,7 @@ public class APIToolkit {
         return newClient(apikey, debug, redactHeaders, redactRequestBody, emptyList);
     }
 
-    public static class ClientMetadata {
+    private static class ClientMetadata {
 
         @JsonProperty("project_id")
         private String projectId;
@@ -211,7 +221,7 @@ public class APIToolkit {
         private Map<String, String> pubsubPushServiceAccount;
     }
 
-    public void publishMessage(ByteString message) {
+    private void publishMessage(ByteString message) {
         if (this.pubsubClient != null) {
             PubsubMessage pubsubMessage = PubsubMessage.newBuilder().setData(message).build();
             ApiFuture<String> messageIdFuture = this.pubsubClient.publish(pubsubMessage);
@@ -228,7 +238,7 @@ public class APIToolkit {
         }
     }
 
-    public static ClientMetadata getClientMetadata(String apiKey, String rootUrl) throws IOException {
+    private static ClientMetadata getClientMetadata(String apiKey, String rootUrl) throws IOException {
         String url = "https://app.apitoolkit.io";
         if (rootUrl != null && !rootUrl.isEmpty()) {
             url = rootUrl;
